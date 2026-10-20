@@ -1,0 +1,5 @@
+requests
+markdown
+google-auth-oauthlib
+python-dotenv
+pyyaml

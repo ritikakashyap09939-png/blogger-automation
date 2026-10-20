@@ -1,0 +1,8 @@
+# Local secrets - never commit these
+.env
+client_secret*.json
+
+# Python
+__pycache__/
+venv/
+*.pyc

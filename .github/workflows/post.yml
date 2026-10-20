@@ -1,0 +1,100 @@
+name: Daily Blogger Auto-Post
+
+# Runs every day at 04:30 UTC.
+#   04:30 UTC == 10:00 AM IST (IST is UTC+5:30).
+# NOTE: GitHub's scheduler can start a run a few minutes late during busy
+# periods. That is normal and harmless - the job still runs once per day.
+#
+# You can also run it manually from the Actions tab (workflow_dispatch).
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      as_draft:
+        description: "Save as draft (true) or publish live (false)"
+        required: false
+        default: "true"
+      dry_run:
+        description: "Dry run - validate only, no API call (true/false)"
+        required: false
+        default: "false"
+
+# Needed so the workflow can commit changed log files back to the repo.
+permissions:
+  contents: write
+
+# Never run two posting jobs at once.
+concurrency:
+  group: blogger-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Work out the effective AS_DRAFT value:
+      #   - manual runs honour the as_draft input
+      #   - scheduled runs are ALWAYS drafts unless the repo variable
+      #     POST_LIVE is set to "true"
+      - name: Resolve AS_DRAFT
+        id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "as_draft=${{ github.event.inputs.as_draft }}" >> "$GITHUB_OUTPUT"
+          else
+            if [ "${{ vars.POST_LIVE }}" = "true" ]; then
+              echo "as_draft=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "as_draft=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      # Shared env for the pipeline steps below.
+      - name: Generate post
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+        run: python scripts/generate_post.py
+
+      - name: Fetch image
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        run: python scripts/fetch_image.py
+
+      - name: Post to Blogger
+        env:
+          BLOGGER_CLIENT_ID: ${{ secrets.BLOGGER_CLIENT_ID }}
+          BLOGGER_CLIENT_SECRET: ${{ secrets.BLOGGER_CLIENT_SECRET }}
+          BLOGGER_REFRESH_TOKEN: ${{ secrets.BLOGGER_REFRESH_TOKEN }}
+          BLOGGER_BLOG_ID: ${{ secrets.BLOGGER_BLOG_ID }}
+          AS_DRAFT: ${{ steps.resolve.outputs.as_draft }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: python scripts/post_to_blogger.py
+
+      # Commit changed log files (used_topics.txt, anchors.txt, used_images.txt)
+      # and, on a successful real post, the moved markdown file.
+      - name: Commit changed files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: daily auto-post update [skip ci]"
+            git push
+          fi
