@@ -16,7 +16,7 @@ on:
         required: false
         default: "true"
       dry_run:
-        description: "Dry run - validate only, no API call (true/false)"
+        description: "Dry run - no Blogger API call, no commit (true/false)"
         required: false
         default: "false"
 
@@ -71,8 +71,6 @@ jobs:
         run: python scripts/generate_post.py
 
       - name: Fetch image
-        env:
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         run: python scripts/fetch_image.py
 
       - name: Post to Blogger
@@ -87,7 +85,9 @@ jobs:
 
       # Commit changed log files (used_topics.txt, anchors.txt, used_images.txt)
       # and, on a successful real post, the moved markdown file.
+      # Skipped on dry runs so test runs do not commit generated files or logs.
       - name: Commit changed files
+        if: github.event.inputs.dry_run != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

@@ -13,10 +13,17 @@ Key behaviours:
 - Every post contains 1-2 natural portfolio links with VARIED anchor text
   (an anchors log keeps two identical anchors from appearing back to back).
 - Validates the result and regenerates up to 3 times before failing clearly.
+- Rejects drafts that invent personal claims (client names, fake results,
+  "my client", "increased ... by NN%", etc.) - posts must be practical
+  guides, not fabricated war stories.
+- Model fallback: if GEMINI_MODEL is empty, or the API answers 404 /
+  "model not found", the script asks the Gemini ListModels endpoint for a
+  current "flash" model that supports generateContent (highest version
+  wins), prints it and retries. No usable model -> clear error.
 
 Environment variables:
     GEMINI_API_KEY   (required)
-    GEMINI_MODEL     (optional, default "gemini-2.0-flash")
+    GEMINI_MODEL     (optional; empty/invalid -> auto-discover a flash model)
 """
 
 import os
@@ -42,7 +49,7 @@ ANCHORS_FILE = PROJECT_ROOT / "anchors.txt"
 PORTFOLIO_URL = "https://ritika-rajput-portfolio.vercel.app"
 PORTFOLIO_DOMAIN = "ritika-rajput-portfolio.vercel.app"
 
-DEFAULT_MODEL = "gemini-2.0-flash"
+LIST_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 MIN_WORDS = 700
 MAX_WORDS = 1000
@@ -159,6 +166,12 @@ HARD RULES:
 - The main subject must be "{skill}". Do not make any other technology the
   main subject.
 - Never claim experience with anything that is not in the ALLOWED SKILLS list.
+- NO FABRICATED PERSONAL CLAIMS: never invent client names, projects, job
+  history, results, numbers, testimonials, or specific past events.
+- Write as practical tips, a guide, and general lessons - not a war story.
+- First person is allowed ONLY for neutral framing like "in this guide I
+  will show you", NEVER for fabricated experiences.
+- Do not claim to have done work for specific people or companies.
 - First-person developer voice. Practical, specific, no fluff, no keyword
   stuffing. Do not invent statistics or fake results.
 - 700-1000 words. Use "##" headings, short paragraphs, and a short conclusion.
@@ -180,6 +193,10 @@ Respond with ONLY a JSON object (no markdown fences, no extra text) shaped like:
 """.strip()
 
 
+class GeminiModelNotFoundError(RuntimeError):
+    """Raised when the requested Gemini model does not exist / is unknown."""
+
+
 def call_gemini(api_key: str, model: str, prompt: str) -> str:
     """Call Gemini and return the raw text of the first candidate."""
     url = (
@@ -193,14 +210,97 @@ def call_gemini(api_key: str, model: str, prompt: str) -> str:
     }
     response = requests.post(url, params={"key": api_key}, json=payload, timeout=90)
     if response.status_code != 200:
+        detail = response.text[:300]
+        lowered = response.text.lower()
+        if response.status_code == 404 or (
+            "model" in lowered and "not found" in lowered
+        ):
+            raise GeminiModelNotFoundError(
+                f"Gemini model '{model}' not found (HTTP {response.status_code}): "
+                f"{detail}"
+            )
         raise RuntimeError(
-            f"Gemini API error (HTTP {response.status_code}): {response.text[:300]}"
+            f"Gemini API error (HTTP {response.status_code}): {detail}"
         )
     data = response.json()
     try:
         return data["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError) as exc:
         raise RuntimeError(f"Unexpected Gemini response shape: {exc}\n{data}")
+
+
+def pick_flash_model(api_key: str) -> str:
+    """
+    Ask the Gemini ListModels endpoint for models that support generateContent
+    and whose name contains "flash", then return the highest-versioned one.
+    Raises RuntimeError with a clear message if none can be found.
+    """
+    response = requests.get(LIST_MODELS_URL, params={"key": api_key}, timeout=30)
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Gemini ListModels call failed (HTTP {response.status_code}): "
+            f"{response.text[:300]}"
+        )
+    try:
+        models = response.json().get("models", [])
+    except ValueError:
+        raise RuntimeError("Gemini ListModels returned invalid JSON")
+
+    candidates = []
+    for entry in models:
+        raw_name = str(entry.get("name", ""))
+        short = raw_name.split("/", 1)[-1]
+        methods = entry.get("supportedGenerationMethods") or []
+        if "generateContent" in methods and "flash" in short.lower():
+            candidates.append(short)
+
+    if not candidates:
+        raise RuntimeError(
+            "Gemini ListModels returned no 'flash' model that supports "
+            "generateContent. Set GEMINI_MODEL to a valid model name."
+        )
+
+    def version_key(name: str) -> tuple:
+        nums = re.findall(r"\d+", name)
+        version = tuple(int(n) for n in nums) if nums else (0,)
+        # On the same version, prefer plain "flash" over lite/preview variants.
+        plain = 0 if re.search(r"flash-(?:lite|preview|experimental)", name) else 1
+        return (version, plain)
+
+    return sorted(set(candidates), key=version_key, reverse=True)[0]
+
+
+def resolve_model(api_key: str) -> str:
+    """
+    Return the model to use: GEMINI_MODEL from the environment if set,
+    otherwise discover a current flash model via ListModels.
+    """
+    configured = env("GEMINI_MODEL")
+    if configured:
+        return configured
+    print("GEMINI_MODEL is not set - discovering a flash model via ListModels...")
+    model = pick_flash_model(api_key)
+    print(f"  Using model: {model}")
+    return model
+
+
+def call_gemini_with_model_fallback(
+    api_key: str, model: str, prompt: str
+) -> tuple[str, str]:
+    """
+    Call Gemini with the given model. If the model no longer exists (404 /
+    "model not found"), discover a working flash model via ListModels and
+    retry with it. Returns (raw_text, model_used).
+    """
+    try:
+        return call_gemini(api_key, model, prompt), model
+    except GeminiModelNotFoundError as exc:
+        print(f"  {exc}")
+        print("  Discovering an available flash model via ListModels...")
+        fallback = pick_flash_model(api_key)
+        print(f"  Using model: {fallback}")
+        raw = call_gemini(api_key, fallback, prompt)
+        return raw, fallback
 
 
 def parse_gemini_json(text: str) -> dict:
@@ -248,6 +348,29 @@ def find_anchors(markdown_body: str) -> list[str]:
     return [m.strip() for m in pattern.findall(markdown_body)]
 
 
+# Drafts must be practical guides, not invented war stories. These patterns
+# catch the most common fabricated-personal-claim phrasings.
+FORBIDDEN_CLAIM_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bmy\s+clients?\b", re.I), "'my client'"),
+    (re.compile(r"\bfor\s+a\s+client\b", re.I), "'for a client'"),
+    (re.compile(r"\bI\s+helped\s+a\b", re.I), "'I helped a'"),
+    (
+        re.compile(
+            r"\bincreased\b[^.\n]{0,80}?\bby\s+\d+(?:\.\d+)?\s*%", re.IGNORECASE
+        ),
+        "'increased ... by NN%'",
+    ),
+]
+
+
+def find_forbidden_claim(text: str) -> str | None:
+    """Return a short label if the text contains a forbidden personal claim."""
+    for pattern, label in FORBIDDEN_CLAIM_PATTERNS:
+        if pattern.search(text):
+            return label
+    return None
+
+
 def validate(data: dict, skills: list[str]) -> None:
     """Raise ValueError with a clear message if the generated post is invalid."""
     title = str(data.get("title", "")).strip()
@@ -266,6 +389,13 @@ def validate(data: dict, skills: list[str]) -> None:
         raise ValueError("labels must be a list of 3 to 5 items")
     if not image_query:
         raise ValueError("image_query is empty")
+
+    claim = find_forbidden_claim(f"{title}\n{body}")
+    if claim:
+        raise ValueError(
+            f"draft contains a forbidden personal-claim pattern ({claim}); "
+            "posts must be practical guides without invented experiences"
+        )
 
     words = word_count(body)
     if words < MIN_WORDS or words > MAX_WORDS:
@@ -322,7 +452,7 @@ def main() -> int:
         print("ERROR: GEMINI_API_KEY is not set.")
         return 1
 
-    model = env("GEMINI_MODEL", DEFAULT_MODEL)
+    model = resolve_model(api_key)
     skills = read_skills()
     skill = pick_skill(skills)
     used_titles = read_used_titles()
@@ -339,7 +469,9 @@ def main() -> int:
     for attempt in range(1, MAX_ATTEMPTS + 1):
         print(f"Attempt {attempt}/{MAX_ATTEMPTS}...")
         try:
-            raw = call_gemini(api_key, model, build_prompt(skill, skills, last_anchor))
+            raw, model = call_gemini_with_model_fallback(
+                api_key, model, build_prompt(skill, skills, last_anchor)
+            )
             data = parse_gemini_json(raw)
             validate(data, skills)
 

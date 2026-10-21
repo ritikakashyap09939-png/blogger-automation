@@ -17,21 +17,30 @@ Roz 10:00 AM IST par GitHub Actions ye pipeline chalata hai:
    Gemini API se us skill par ek 700-1000 word ka post banata hai (JSON mein:
    title, labels, image_query, body). Har post mein portfolio ke 1-2 natural
    links hote hain, anchor text har baar alag.
-2. **fetch_image.py** — Pexels API se topic-related landscape photo dhoondta
-   hai aur post ke sabse upar `<img>` laga deta hai (Blogger isi ko thumbnail
-   banata hai). Photo ka credit caption bhi lagta hai.
+2. **fetch_image.py** — Openverse (free, bina API key) se topic-related
+   landscape photo dhoondta hai aur post ke sabse upar `<img>` laga deta hai
+   (Blogger isi ko thumbnail banata hai). Creator + license ka credit caption
+   bhi lagta hai. HTTP 429 (rate limit) par wait karke retry karta hai.
 3. **post_to_blogger.py** — Blogger API par post bhejta hai. **Default draft.**
    Live sirf tab jab `POST_LIVE=true` ho. Duplicate title skip karta hai.
 
 Har run ke baad `used_topics.txt`, `anchors.txt` aur `used_images.txt` repo mein
 commit ho jaate hain, taaki koi cheez repeat na ho.
 
+Extra safety:
+- **Model fallback** — `GEMINI_MODEL` set nahi hai ya model 404 de, to script
+  khud Gemini ListModels se ek available **flash** model choose kar leti hai
+  (highest version) aur print karti hai.
+- **No fabricated claims** — draft mein "my client", "for a client",
+  "I helped a", "increased ... by NN%" jaise patterns mile to post reject
+  hokar dobara generate hota hai (max 3 attempts).
+
 ## 2. Folder structure
 
 ```
 .github/workflows/post.yml   daily pipeline (cron + manual)
 scripts/generate_post.py     Gemini se post banata hai
-scripts/fetch_image.py       Pexels se photo lagata hai
+scripts/fetch_image.py       Openverse se photo lagata hai (no API key)
 scripts/post_to_blogger.py   Blogger par post karta hai
 scripts/get_refresh_token.py one-time token (local)
 posts/                       aaj ka pending post (run ke baad published/)
@@ -39,7 +48,7 @@ posts/published/             post ho chuki files
 skills.txt                   portfolio se nikaali gayi skills (EDIT MAT karein)
 used_topics.txt              skill + title log (auto)
 anchors.txt                  anchor text log (auto)
-used_images.txt              Pexels photo id log (auto)
+used_images.txt              Openverse image id log (auto)
 requirements.txt .env.example .gitignore README.md
 ```
 
@@ -66,20 +75,19 @@ requirements.txt .env.example .gitignore README.md
 4. **Blog ID** — Blogger dashboard ke URL mein `blogID=XXXX` hota hai.
 
 5. **Gemini API key** — aistudio.google.com se `GEMINI_API_KEY` lein.
+   (Photo ke liye koi key nahi chahiye — Openverse anonymous chalta hai.)
 
-6. **Pexels API key** — pexels.com/api se `PEXELS_API_KEY` lein.
+6. **Private GitHub repo banayein** aur code push karein (commands neeche).
 
-7. **Private GitHub repo banayein** aur code push karein (commands neeche).
-
-8. **GitHub Secrets add karein** (Settings → Secrets and variables → Actions):
+7. **GitHub Secrets add karein** (Settings → Secrets and variables → Actions):
    - `BLOGGER_CLIENT_ID`
    - `BLOGGER_CLIENT_SECRET`
    - `BLOGGER_REFRESH_TOKEN`
    - `BLOGGER_BLOG_ID`
    - `GEMINI_API_KEY`
-   - `PEXELS_API_KEY`
 
-9. **Optional variable**: `GEMINI_MODEL` (default `gemini-2.0-flash`).
+8. **Optional variable**: `GEMINI_MODEL`. Agar ye empty hai ya model 404
+   kare, to script ListModels se available flash model khud choose kar leti hai.
 
 ## 4. Test kaise karein (How to test)
 
@@ -88,7 +96,8 @@ Pehle dry run karein, phir draft:
 1. GitHub → **Actions → Daily Blogger Auto-Post → Run workflow**.
 2. `as_draft = true` (default), `dry_run = true`.
    - `dry_run` sirf posting step ko rokta hai (generate + image phir bhi hote
-     hain). Confirm karne ke liye ki validation aur posting pass hui.
+     hain), aur **commit step bhi skip** ho jaata hai - test run mein koi
+     generated file ya log repo mein commit nahi hoti.
 3. Sab theek lage to `dry_run = false` ke saath dobara chalayein — ye **draft**
    banayega (live nahi).
 4. Blogger dashboard → Drafts mein post check karein.
@@ -123,9 +132,11 @@ Ab daily runs live publish karenge. Draft-only par wapas jaane ke liye
 | --- | --- |
 | `invalid_grant` | Consent screen Testing mode mein (tokens ~7 din chalti hain) ya token revoke. Production par publish karein, phir `get_refresh_token.py` dobara chalayein aur secret update karein. |
 | `403` (Blogger) | Token mein Blogger scope nahi, ya Blogger API enable nahi, ya aap blog owner nahi. Sahi scope ke saath token dobara banayein. |
-| `Pexels 401` | `PEXELS_API_KEY` galat / missing hai. |
+| `Openverse HTTP 429` | Rate limit — script khud wait karke retry karta hai (max 3). Baar baar aaye to thodi der baad chalayein. |
+| `no unused Openverse photo` | Saare results already used ya bina image url ke the. Post thodi der baad retry karein. |
 | `GEMINI_API_KEY is not set` | Secret add nahi hua ya naam galat hai. |
-| `could not generate a valid post` | Gemini ne 3 baar invalid output diya. `GEMINI_MODEL` change karein ya prompt check karein. |
+| `could not generate a valid post` | Gemini ne 3 baar invalid output diya (ya draft mein fabricated personal-claim pattern mila). `GEMINI_MODEL` change karein ya prompt check karein. |
+| `model not found` / 404 | Script khud ListModels se flash model choose kar leti hai; koi na mile to `GEMINI_MODEL` variable set karein. |
 | Push permission error | Repo settings → Actions → General → Workflow permissions → "Read and write permissions". |
 | Workflows paused (60 din inactivity) | GitHub 60 din repo inactivity par scheduled workflows pause kar deta hai. Ek commit karein ya manually chalayein. |
 | `No pending posts` | Aaj ka post already publish ho chuka hai (ya generate fail hua). |
