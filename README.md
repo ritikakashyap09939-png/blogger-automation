@@ -31,6 +31,9 @@ Extra safety:
 - **Model fallback** — `GEMINI_MODEL` set nahi hai ya model 404 de, to script
   khud Gemini ListModels se ek available **flash** model choose kar leti hai
   (highest version) aur print karti hai.
+- **Photo na mile to post rukta nahi** — Openverse se koi image na mile to
+  `fetch_image.py` sirf warning print karta hai aur post bina image ke
+  publish ho jaati hai (job fail nahi hota).
 - **No fabricated claims** — draft mein "my client", "for a client",
   "I helped a", "increased ... by NN%" jaise patterns mile to post reject
   hokar dobara generate hota hai (max 3 attempts).
@@ -132,8 +135,8 @@ Ab daily runs live publish karenge. Draft-only par wapas jaane ke liye
 | --- | --- |
 | `invalid_grant` | Consent screen Testing mode mein (tokens ~7 din chalti hain) ya token revoke. Production par publish karein, phir `get_refresh_token.py` dobara chalayein aur secret update karein. |
 | `403` (Blogger) | Token mein Blogger scope nahi, ya Blogger API enable nahi, ya aap blog owner nahi. Sahi scope ke saath token dobara banayein. |
-| `Openverse HTTP 429` | Rate limit — script khud wait karke retry karta hai (max 3). Baar baar aaye to thodi der baad chalayein. |
-| `no unused Openverse photo` | Saare results already used ya bina image url ke the. Post thodi der baad retry karein. |
+| `Openverse HTTP 429` | Rate limit — script khud wait karke retry karta hai (max 3 retries, backoff ke saath). Baar baar aaye to thodi der baad chalayein. |
+| `no unused Openverse photo` | Saare results already used ya bina image url ke the. **Post fail nahi hota** — script warning print karke post ko bina image ke publish karne deti hai. |
 | `GEMINI_API_KEY is not set` | Secret add nahi hua ya naam galat hai. |
 | `could not generate a valid post` | Gemini ne 3 baar invalid output diya (ya draft mein fabricated personal-claim pattern mila). `GEMINI_MODEL` change karein ya prompt check karein. |
 | `model not found` / 404 | Script khud ListModels se flash model choose kar leti hai; koi na mile to `GEMINI_MODEL` variable set karein. |

@@ -17,8 +17,11 @@ Behaviour:
 - Skips results that have no direct image url.
 - Hotlinks the Openverse direct image URL (we do NOT upload images to Blogger).
 - Adds a caption crediting the creator and the source page, via Openverse.
+- If no photo can be found, the job is NOT failed: it prints a warning and
+  the post is published without an image.
 """
 
+import html
 import re
 import sys
 import time
@@ -35,7 +38,7 @@ OPENVERSE_SEARCH_URL = "https://api.openverse.org/v1/images/"
 FALLBACK_QUERY = "coding laptop"
 USER_AGENT = "ritika-blogger-automation/1.0"
 
-MAX_RETRIES = 3
+MAX_RETRIES = 3  # retries AFTER the initial request (max 4 requests per query)
 BACKOFF_SECONDS = 5
 
 
@@ -99,7 +102,7 @@ def search_openverse(query: str) -> list[dict]:
     }
     headers = {"User-Agent": USER_AGENT}
 
-    for attempt in range(1, MAX_RETRIES + 1):
+    for attempt in range(MAX_RETRIES + 1):
         try:
             response = requests.get(
                 OPENVERSE_SEARCH_URL, headers=headers, params=params, timeout=30
@@ -109,9 +112,12 @@ def search_openverse(query: str) -> list[dict]:
             return []
 
         if response.status_code == 429:
-            wait = BACKOFF_SECONDS * attempt
+            if attempt >= MAX_RETRIES:
+                break
+            wait = BACKOFF_SECONDS * (attempt + 1)
             print(f"  Openverse: too many requests (HTTP 429) for '{query}'. "
-                  f"Waiting {wait}s then retrying ({attempt}/{MAX_RETRIES})...")
+                  f"Waiting {wait}s then retrying "
+                  f"(retry {attempt + 1}/{MAX_RETRIES})...")
             time.sleep(wait)
             continue
 
@@ -126,7 +132,7 @@ def search_openverse(query: str) -> list[dict]:
             return []
 
     print(f"  Openverse still rate-limiting (HTTP 429) for '{query}' "
-          f"after {MAX_RETRIES} attempts. Giving up on this query.")
+          f"after {MAX_RETRIES} retries. Giving up on this query.")
     return []
 
 
@@ -134,7 +140,7 @@ def choose_photo(post_meta: dict, title: str) -> dict | None:
     """Try image_query, then a title-derived query, then the fallback query."""
     used_ids = read_used_ids()
 
-    image_query = str(post_meta.get("image_query", "")).strip()
+    image_query = str(post_meta.get("image_query") or "").strip()
     queries = []
     if image_query:
         queries.append(image_query)
@@ -170,7 +176,7 @@ def build_image_html(result: dict, title: str) -> str:
     alt = (title or "blog post image").replace('"', "'")
 
     img = (
-        f'<img src="{src}" alt="{alt}" '
+        f'<img src="{html.escape(src, quote=True)}" alt="{html.escape(alt, quote=True)}" '
         f'style="max-width:100%;height:auto">'
     )
 
@@ -182,12 +188,12 @@ def build_image_html(result: dict, title: str) -> str:
     else:
         license_label = "an open license"
 
-    who = creator or "Unknown"
+    who = html.escape(creator or "Unknown")
     if creator_url:
-        who = (f'<a href="{creator_url}" target="_blank" rel="noopener">'
-               f'{creator or "Unknown"}</a>')
+        who = (f'<a href="{html.escape(creator_url, quote=True)}" '
+               f'target="_blank" rel="noopener">{who}</a>')
 
-    license_link = source_url or "https://openverse.org"
+    license_link = html.escape(source_url or "https://openverse.org", quote=True)
     caption = (
         f'<p><small>Photo by {who} '
         f'(<a href="{license_link}" target="_blank" rel="noopener">{license_label}</a>) '
@@ -206,7 +212,7 @@ def main() -> int:
 
     raw = post_file.read_text(encoding="utf-8")
     meta, body = parse_front_matter(raw)
-    title = str(meta.get("title", "")).strip()
+    title = str(meta.get("title") or "").strip()
 
     # Idempotency: if an image was already inserted, do nothing.
     if body.lstrip().startswith("<img"):
@@ -215,8 +221,9 @@ def main() -> int:
 
     photo = choose_photo(meta, title)
     if photo is None:
-        print("ERROR: no unused Openverse photo found for this post.")
-        return 1
+        print("WARNING: no unused Openverse photo found for this post. "
+              "Continuing without an image.")
+        return 0
 
     image_id = str(photo.get("id"))
     image_html = build_image_html(photo, title)
