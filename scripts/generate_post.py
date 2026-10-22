@@ -430,14 +430,19 @@ def slugify(title: str) -> str:
 
 
 def write_post_file(meta: dict, body: str) -> Path:
-    """Write the markdown file with YAML front matter and return its path."""
+    """
+    Write the markdown file with YAML front matter and return its path.
+
+    Every value is written as a double-quoted YAML scalar (json.dumps), so
+    titles containing ": ", quotes or apostrophes stay valid YAML.
+    """
     labels = ", ".join(str(l) for l in meta["labels"])
     front_matter = (
         "---\n"
-        f"title: {meta['title']}\n"
-        f"labels: {labels}\n"
-        f"skill: {meta['skill']}\n"
-        f"image_query: {meta['image_query']}\n"
+        f"title: {json.dumps(str(meta['title']))}\n"
+        f"labels: {json.dumps(labels)}\n"
+        f"skill: {json.dumps(str(meta['skill']))}\n"
+        f"image_query: {json.dumps(str(meta['image_query']))}\n"
         "---\n"
     )
     POSTS_DIR.mkdir(parents=True, exist_ok=True)

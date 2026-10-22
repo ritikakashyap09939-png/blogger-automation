@@ -62,27 +62,64 @@ def pick_oldest_pending_post() -> Path | None:
     return candidates[0]
 
 
-def parse_front_matter(raw: str) -> tuple[dict, str]:
-    """Split markdown into (front_matter_dict, body). Tolerates missing matter."""
+def split_front_matter(raw: str) -> tuple[list[str], str]:
+    """
+    Split a markdown file into (front_matter_lines, body).
+
+    front_matter_lines keeps the leading and trailing "---" markers so the
+    front matter can be written back untouched. It is an empty list when the
+    file has no front matter.
+    """
     text = raw.replace("\r\n", "\n")
     stripped = text.strip()
     if not stripped.startswith("---"):
-        return {}, text
+        return [], text
     lines = stripped.split("\n")
-    closing = None
     for i in range(1, len(lines)):
         if lines[i].strip() == "---":
-            closing = i
-            break
-    if closing is None:
-        return {}, text
+            return lines[: i + 1], "\n".join(lines[i + 1:])
+    return [], text
+
+
+def parse_simple_front_matter(front_matter: str) -> dict:
+    """
+    Fallback parser for front matter that is NOT valid YAML (older files whose
+    title contained a colon, e.g. "Title: Subtitle").
+
+    Reads "key: value" lines, splits on the FIRST colon only and strips
+    surrounding quotes from the value.
+    """
+    meta: dict[str, str] = {}
+    for line in front_matter.split("\n"):
+        if not line.strip():
+            continue
+        key, separator, value = line.partition(":")
+        if not separator:
+            continue
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        meta[key] = value
+    return meta
+
+
+def parse_front_matter(raw: str) -> tuple[dict, str]:
+    """Split markdown into (front_matter_dict, body). Tolerates missing matter."""
+    front_matter_lines, body = split_front_matter(raw)
+    if not front_matter_lines:
+        return {}, body
+    raw_front_matter = "\n".join(front_matter_lines[1:-1])
     try:
-        meta = yaml.safe_load("\n".join(lines[1:closing])) or {}
+        meta = yaml.safe_load(raw_front_matter) or {}
     except yaml.YAMLError:
-        meta = {}
+        # Old files may have unquoted values containing ": " (e.g. a title
+        # with a colon). Fall back to a simple "key: value" parser.
+        meta = parse_simple_front_matter(raw_front_matter)
     if not isinstance(meta, dict):
-        meta = {}
-    body = "\n".join(lines[closing + 1:])
+        meta = parse_simple_front_matter(raw_front_matter)
     return meta, body
 
 
@@ -228,16 +265,14 @@ def main() -> int:
     image_id = str(photo.get("id"))
     image_html = build_image_html(photo, title)
 
-    # Rebuild the file: front matter, then image HTML, then the body.
-    lines = raw.replace("\r\n", "\n").strip().split("\n")
-    closing = None
-    if lines and lines[0].strip() == "---":
-        for i in range(1, len(lines)):
-            if lines[i].strip() == "---":
-                closing = i
-                break
-    front_matter = "\n".join(lines[: closing + 1]) if closing is not None else ""
-    new_content = f"{front_matter}\n\n{image_html}\n\n{body.strip()}\n"
+    # Rebuild the file: front matter (kept exactly as it was), then the image
+    # HTML, then the body.
+    front_matter_lines, body = split_front_matter(raw)
+    front_matter = "\n".join(front_matter_lines)
+    if front_matter:
+        new_content = f"{front_matter}\n\n{image_html}\n\n{body.strip()}\n"
+    else:
+        new_content = f"{image_html}\n\n{body.strip()}\n"
     post_file.write_text(new_content, encoding="utf-8")
 
     with USED_IMAGES_FILE.open("a", encoding="utf-8") as fh:

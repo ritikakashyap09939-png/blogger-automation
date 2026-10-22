@@ -52,6 +52,7 @@ skills.txt                   portfolio se nikaali gayi skills (EDIT MAT karein)
 used_topics.txt              skill + title log (auto)
 anchors.txt                  anchor text log (auto)
 used_images.txt              Openverse image id log (auto)
+tests/test_front_matter.py   local unit test (no network, mocked)
 requirements.txt .env.example .gitignore README.md
 ```
 
@@ -110,6 +111,12 @@ Local test:
 ```powershell
 # Windows PowerShell
 $env:DRY_RUN="true"; python scripts/post_to_blogger.py
+```
+
+Unit test (poori tarah mocked, koi network call nahi):
+
+```powershell
+python -m unittest discover -s tests -v
 ```
 
 ## 5. Live kaise jaayein (How to go live)

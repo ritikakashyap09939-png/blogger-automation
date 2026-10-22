@@ -132,6 +132,31 @@ def pick_oldest_pending_post() -> Path | None:
     return candidates[0]
 
 
+def parse_simple_front_matter(front_matter: str) -> dict:
+    """
+    Fallback parser for front matter that is NOT valid YAML (older files whose
+    title contained a colon, e.g. "Title: Subtitle").
+
+    Reads "key: value" lines, splits on the FIRST colon only and strips
+    surrounding quotes from the value.
+    """
+    meta: dict[str, str] = {}
+    for line in front_matter.split("\n"):
+        if not line.strip():
+            continue
+        key, separator, value = line.partition(":")
+        if not separator:
+            continue
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        meta[key] = value
+    return meta
+
+
 def parse_post(raw_text: str) -> tuple[dict, str]:
     """Split a markdown file into (front_matter_dict, body_markdown)."""
     text = raw_text.replace("\r\n", "\n").strip()
@@ -145,10 +170,13 @@ def parse_post(raw_text: str) -> tuple[dict, str]:
             break
     if closing is None:
         return {}, text
+    raw_front_matter = "\n".join(lines[1:closing])
     try:
-        meta = yaml.safe_load("\n".join(lines[1:closing])) or {}
-    except yaml.YAMLError as exc:
-        raise ValueError(f"Invalid YAML front matter: {exc}")
+        meta = yaml.safe_load(raw_front_matter) or {}
+    except yaml.YAMLError:
+        # Old files may have unquoted values containing ": " (e.g. a title
+        # with a colon). Fall back to a simple "key: value" parser.
+        meta = parse_simple_front_matter(raw_front_matter)
     if not isinstance(meta, dict):
         raise ValueError("Front matter must be a YAML mapping (key: value).")
     body = "\n".join(lines[closing + 1:]).strip()
