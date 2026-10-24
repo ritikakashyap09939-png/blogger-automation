@@ -2,3 +2,4 @@ Web Development | Modern Web Development: Practical Strategies for Resilient Com
 Social Media Management | Building a Repeatable Social Media Management Workflow for Technical Brands
 Digital Marketing | Structuring a Full-Funnel Digital Marketing Strategy with Technical Attribution
 Professional Video Editing | Mastering the Post-Production Pipeline: Organization, Pacing, and Color Workflows
+Web Development | Architecting Resilient Web Layouts with Modern CSS Grid and Flexbox
